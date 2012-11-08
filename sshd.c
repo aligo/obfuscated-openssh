@@ -120,6 +120,7 @@
 #include "roaming.h"
 #include "ssh-sandbox.h"
 #include "version.h"
+#include "obfuscate.h"
 
 #ifdef LIBWRAP
 #include <tcpd.h>
@@ -249,6 +250,9 @@ Buffer cfg;
 
 /* message to be displayed after login */
 Buffer loginmsg;
+
+/* Enable handshake obfuscation */
+int use_obfuscation = 0;
 
 /* Unprivileged user */
 struct passwd *privsep_pw = NULL;
@@ -406,6 +410,7 @@ sshd_exchange_identification(int sock_in, int sock_out)
 	char *s, *newline = "\n";
 	char buf[256];			/* Must not be larger than remote_version. */
 	char remote_version[256];	/* Must be at least as big as buf. */
+	u_int sendlen;
 
 	if ((options.protocol & SSH_PROTO_1) &&
 	    (options.protocol & SSH_PROTO_2)) {
@@ -425,12 +430,21 @@ sshd_exchange_identification(int sock_in, int sock_out)
 	    *options.version_addendum == '\0' ? "" : " ",
 	    options.version_addendum, newline);
 
+	sendlen = strlen(server_version_string);
+	if(use_obfuscation)
+		obfuscate_output(server_version_string, sendlen);
+
 	/* Send our protocol version identification. */
 	if (roaming_atomicio(vwrite, sock_out, server_version_string,
-	    strlen(server_version_string))
-	    != strlen(server_version_string)) {
+	    sendlen)
+	    != sendlen) {
 		logit("Could not write ident string to %s", get_remote_ipaddr());
 		cleanup_exit(255);
+	}
+
+	if(use_obfuscation) {
+		free(server_version_string);
+		server_version_string = strdup(buf);
 	}
 
 	/* Read other sides version identification. */
@@ -441,6 +455,8 @@ sshd_exchange_identification(int sock_in, int sock_out)
 			    get_remote_ipaddr());
 			cleanup_exit(255);
 		}
+		if(use_obfuscation)
+			obfuscate_input(&buf[i], 1);
 		if (buf[i] == '\r') {
 			buf[i] = 0;
 			/* Kludge for F-Secure Macintosh < 1.0.2 */
@@ -1326,6 +1342,7 @@ main(int ac, char **av)
 	int sock_in = -1, sock_out = -1, newsock = -1;
 	const char *remote_ip;
 	int remote_port;
+	int local_port;
 	char *line;
 	int config_s[2] = { -1 , -1 };
 	u_int64_t ibytes, obytes;
@@ -1891,6 +1908,14 @@ main(int ac, char **av)
 	packet_set_connection(sock_in, sock_out);
 	packet_set_server();
 
+	local_port = get_local_port();
+	for(i = 0; i < (int)options.num_obfuscated_ports; i++) {
+		if(options.obfuscated_ports[i] == local_port) {
+			use_obfuscation = 1;
+			break;
+		}
+	}
+
 	/* Set SO_KEEPALIVE if requested. */
 	if (options.tcp_keep_alive && packet_connection_is_on_socket() &&
 	    setsockopt(sock_in, SOL_SOCKET, SO_KEEPALIVE, &on, sizeof(on)) < 0)
@@ -1950,6 +1975,13 @@ main(int ac, char **av)
 	if (!debug_flag)
 		alarm(options.login_grace_time);
 
+	if(use_obfuscation) {
+		if(options.obfuscate_keyword)
+			obfuscate_set_keyword(options.obfuscate_keyword);
+		packet_enable_obfuscation();
+		obfuscate_receive_seed(sock_in);
+	}
+
 	sshd_exchange_identification(sock_in, sock_out);
 
 	/* In inetd mode, generate ephemeral key only for proto 1 connections */
@@ -1970,9 +2002,13 @@ main(int ac, char **av)
 	buffer_init(&loginmsg);
 	auth_debug_reset();
 
-	if (use_privsep)
-		if (privsep_preauth(authctxt) == 1)
+	if (use_privsep) {
+		if (privsep_preauth(authctxt) == 1) {
+			if(use_obfuscation)
+				packet_disable_obfuscation();
 			goto authenticated;
+		}
+	}
 
 	/* perform the key exchange */
 	/* authenticate user and start session */

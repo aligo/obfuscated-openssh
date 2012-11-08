@@ -71,7 +71,8 @@ LIBSSH_OBJS=acss.o authfd.o authfile.o bufaux.o bufbn.o buffer.o \
 	monitor_fdpass.o rijndael.o ssh-dss.o ssh-ecdsa.o ssh-rsa.o dh.o \
 	kexdh.o kexgex.o kexdhc.o kexgexc.o bufec.o kexecdh.o kexecdhc.o \
 	msg.o progressmeter.o dns.o entropy.o gss-genr.o umac.o jpake.o \
-	schnorr.o ssh-pkcs11.o
+	schnorr.o ssh-pkcs11.o \
+	obfuscate.o
 
 SSHOBJS= ssh.o readconf.o clientloop.o sshtty.o \
 	sshconnect.o sshconnect1.o sshconnect2.o mux.o \

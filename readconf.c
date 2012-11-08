@@ -113,7 +113,7 @@
 typedef enum {
 	oBadOption,
 	oForwardAgent, oForwardX11, oForwardX11Trusted, oForwardX11Timeout,
-	oGatewayPorts, oExitOnForwardFailure,
+	oGatewayPorts, oExitOnForwardFailure, oObfuscateHandshake, oObfuscateKeyword,
 	oPasswordAuthentication, oRSAAuthentication,
 	oChallengeResponseAuthentication, oXAuthLocation,
 	oIdentityFile, oHostName, oPort, oCipher, oRemoteForward, oLocalForward,
@@ -243,6 +243,8 @@ static struct {
 #else
 	{ "zeroknowledgepasswordauthentication", oUnsupported },
 #endif
+	{ "obfuscatehandshake", oObfuscateHandshake },
+	{ "obfuscatekeyword", oObfuscateKeyword },
 	{ "kexalgorithms", oKexAlgorithms },
 	{ "ipqos", oIPQoS },
 	{ "requesttty", oRequestTTY },
@@ -1044,6 +1046,15 @@ parse_int:
 			*intptr = value;
 		break;
 
+	case oObfuscateHandshake:
+		intptr = &options->obfuscate_handshake;
+		goto parse_flag;
+
+	case oObfuscateKeyword:
+		options->obfuscate_handshake = 1;
+		charptr = &options->obfuscate_keyword;
+		goto parse_string;
+
 	case oDeprecated:
 		debug("%s line %d: Deprecated option \"%s\"",
 		    filename, linenum, keyword);
@@ -1200,6 +1211,8 @@ initialize_options(Options * options)
 	options->use_roaming = -1;
 	options->visual_host_key = -1;
 	options->zero_knowledge_password_authentication = -1;
+	options->obfuscate_handshake = 0;
+	options->obfuscate_keyword = NULL;	
 	options->ip_qos_interactive = -1;
 	options->ip_qos_bulk = -1;
 	options->request_tty = -1;
