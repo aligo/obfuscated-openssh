@@ -425,11 +425,11 @@ sshd_exchange_identification(int sock_in, int sock_out)
 		minor = PROTOCOL_MINOR_1;
 	}
 
-	xasprintf(&server_version_string, "SSH-%d.%d-%.100s%s%s%s",
+	snprintf(buf, sizeof buf, "SSH-%d.%d-%.100s%s%s%s",
 	    major, minor, SSH_VERSION,
 	    *options.version_addendum == '\0' ? "" : " ",
 	    options.version_addendum, newline);
-
+	server_version_string = xstrdup(buf);
 	sendlen = strlen(server_version_string);
 	if(use_obfuscation)
 		obfuscate_output(server_version_string, sendlen);
