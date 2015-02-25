@@ -78,6 +78,7 @@
 #include "misc.h"
 #include "channels.h"
 #include "ssh.h"
+#include "obfuscate.h"
 #include "ssherr.h"
 #include "roaming.h"
 
@@ -157,6 +158,8 @@ struct session_state {
 
 	/* Set to true if we are authenticated. */
 	int after_authentication;
+
+	int obfuscation;
 
 	int keep_alive_timeouts;
 
@@ -574,6 +577,9 @@ packet_set_encryption_key(const u_char *key, u_int keylen, int number)
 	    (r = cipher_init(&active_state->receive_context, cipher,
 	    key, keylen, NULL, 0, CIPHER_DECRYPT)) != 0)
 		fatal("%s: cipher_init: %s", __func__, ssh_err(r));
+	
+	if(active_state->obfuscation)
+		packet_disable_obfuscation();
 }
 
 u_int
@@ -728,6 +734,9 @@ packet_send1(void)
 	    buffer_ptr(&active_state->outgoing_packet),
 	    buffer_len(&active_state->outgoing_packet), 0, 0) != 0)
 		fatal("%s: cipher_crypt failed", __func__);
+
+	if(active_state->obfuscation)
+		obfuscate_output(cp, buffer_len(&active_state->outgoing_packet));
 
 #ifdef PACKET_DEBUG
 	fprintf(stderr, "encrypted: ");
@@ -974,6 +983,10 @@ packet_send2_wrapped(void)
 		}
 		buffer_append(&active_state->output, macbuf, mac->mac_len);
 	}
+
+	if(active_state->obfuscation)
+		obfuscate_output(cp, buffer_len(&active_state->outgoing_packet));
+
 #ifdef PACKET_DEBUG
 	fprintf(stderr, "encrypted: ");
 	buffer_dump(&active_state->output);
@@ -1199,6 +1212,9 @@ packet_read_poll1(void)
 
 	/* The entire packet is in buffer. */
 
+	if(active_state->obfuscation)
+		obfuscate_input(buffer_ptr(&active_state->input), padded_len);
+
 	/* Consume packet length. */
 	buffer_consume(&active_state->input, 4);
 
@@ -1319,6 +1335,10 @@ packet_read_poll2(u_int32_t *seqnr_p)
 		buffer_clear(&active_state->incoming_packet);
 		cp = buffer_append_space(&active_state->incoming_packet,
 		    block_size);
+
+		if(active_state->obfuscation)
+			obfuscate_input(buffer_ptr(&active_state->input), block_size);
+
 		if (cipher_crypt(&active_state->receive_context,
 		    active_state->p_read.seqnr, cp,
 		    buffer_ptr(&active_state->input), block_size, 0, 0) != 0)
@@ -1371,6 +1391,10 @@ packet_read_poll2(u_int32_t *seqnr_p)
 	fprintf(stderr, "read_poll enc/full: ");
 	buffer_dump(&active_state->input);
 #endif
+
+	if(active_state->obfuscation)
+		obfuscate_input(buffer_ptr(&active_state->input), need);
+
 	/* EtM: compute mac over encrypted input */
 	if (mac && mac->enabled && mac->etm)
 		macbuf = mac_compute(mac, active_state->p_read.seqnr,
@@ -2003,6 +2027,20 @@ void
 packet_set_authenticated(void)
 {
 	active_state->after_authentication = 1;
+}
+
+void
+packet_enable_obfuscation(void)
+{
+	debug("Obfuscation enabled");
+	active_state->obfuscation = 1;
+}
+void
+packet_disable_obfuscation(void)
+{
+	if(active_state->obfuscation)
+		debug("Obfuscation disabled");
+	active_state->obfuscation = 0;
 }
 
 void *

@@ -62,6 +62,7 @@
 #include "monitor_fdpass.h"
 #include "ssh2.h"
 #include "version.h"
+#include "obfuscate.h"
 
 char *client_version_string = NULL;
 char *server_version_string = NULL;
@@ -172,6 +173,12 @@ ssh_proxy_fdpass_connect(const char *host, u_short port,
 	/* Set the connection file descriptors. */
 	packet_set_connection(sock, sock);
 
+	if(options.obfuscate_handshake) {
+		if(options.obfuscate_keyword)
+			obfuscate_set_keyword(options.obfuscate_keyword);
+		packet_enable_obfuscation();
+	}
+
 	return 0;
 }
 
@@ -247,6 +254,12 @@ ssh_proxy_connect(const char *host, u_short port, const char *proxy_command)
 
 	/* Set the connection file descriptors. */
 	packet_set_connection(pout[0], pin[1]);
+
+	if(options.obfuscate_handshake) {
+		if(options.obfuscate_keyword)
+			obfuscate_set_keyword(options.obfuscate_keyword);
+		packet_enable_obfuscation();
+	}
 
 	/* Indicate OK return */
 	return 0;
@@ -494,6 +507,12 @@ ssh_connect_direct(const char *host, struct addrinfo *aitop,
 	/* Set the connection. */
 	packet_set_connection(sock, sock);
 
+	if(options.obfuscate_handshake) {
+		if(options.obfuscate_keyword)
+			obfuscate_set_keyword(options.obfuscate_keyword);
+		packet_enable_obfuscation();
+	}
+
 	return 0;
 }
 
@@ -507,6 +526,13 @@ ssh_connect(const char *host, struct addrinfo *addrs,
 		    connection_attempts, timeout_ms, want_keepalive, needpriv);
 	} else if (strcmp(options.proxy_command, "-") == 0) {
 		packet_set_connection(STDIN_FILENO, STDOUT_FILENO);
+
+		if(options.obfuscate_handshake) {
+			if(options.obfuscate_keyword)
+				obfuscate_set_keyword(options.obfuscate_keyword);
+			packet_enable_obfuscation();
+		}
+
 		return 0; /* Always succeeds */
 	} else if (options.proxy_use_fdpass) {
 		return ssh_proxy_fdpass_connect(host, port,
@@ -526,6 +552,8 @@ send_client_banner(int connection_out, int minor1)
 		xasprintf(&client_version_string, "SSH-%d.%d-%.100s\n",
 		    PROTOCOL_MAJOR_1, minor1, SSH_VERSION);
 	}
+	if (options.obfuscate_handshake)
+		obfuscate_output(client_version_string, strlen(client_version_string));
 	if (roaming_atomicio(vwrite, connection_out, client_version_string,
 	    strlen(client_version_string)) != strlen(client_version_string))
 		fatal("write: %.100s", strerror(errno));
@@ -594,6 +622,10 @@ ssh_exchange_identification(int timeout_ms)
 			else if (len != 1)
 				fatal("ssh_exchange_identification: "
 				    "read: %.100s", strerror(errno));
+
+			if (options.obfuscate_handshake)
+				obfuscate_input(&buf[i], 1);
+
 			if (buf[i] == '\r') {
 				buf[i] = '\n';
 				buf[i + 1] = 0;
@@ -1294,6 +1326,9 @@ ssh_login(Sensitive *sensitive, const char *orighost,
 	/* Convert the user-supplied hostname into all lowercase. */
 	host = xstrdup(orighost);
 	lowercase(host);
+
+	if (options.obfuscate_handshake)
+		obfuscate_send_seed(packet_get_connection_out());
 
 	/* Exchange protocol version identification strings with the server. */
 	ssh_exchange_identification(timeout_ms);

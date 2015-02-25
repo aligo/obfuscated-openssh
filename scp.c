@@ -395,7 +395,7 @@ main(int argc, char **argv)
 	addargs(&args, "-oClearAllForwardings=yes");
 
 	fflag = tflag = 0;
-	while ((ch = getopt(argc, argv, "dfl:prtvBCc:i:P:q12346S:o:F:")) != -1)
+	while ((ch = getopt(argc, argv, "dfl:prtvBCc:i:P:q12346S:o:F:zZ:")) != -1)
 		switch (ch) {
 		/* User-visible flags. */
 		case '1':
@@ -403,6 +403,7 @@ main(int argc, char **argv)
 		case '4':
 		case '6':
 		case 'C':
+		case 'z':
 			addargs(&args, "-%c", ch);
 			addargs(&remote_remote_args, "-%c", ch);
 			break;
@@ -413,6 +414,7 @@ main(int argc, char **argv)
 		case 'c':
 		case 'i':
 		case 'F':
+		case 'Z':
 			addargs(&remote_remote_args, "-%c", ch);
 			addargs(&remote_remote_args, "%s", optarg);
 			addargs(&args, "-%c", ch);
