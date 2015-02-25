@@ -1,16 +1,17 @@
-SSHD(8)                 OpenBSD System Manager's Manual                SSHD(8)
+SSHD(8)                     System Manager's Manual                    SSHD(8)
 
 NAME
      sshd - OpenSSH SSH daemon
 
 SYNOPSIS
      sshd [-46DdeiqTt] [-b bits] [-C connection_spec]
-          [-c host_certificate_file] [-f config_file] [-g login_grace_time]
-          [-h host_key_file] [-k key_gen_time] [-o option] [-p port] [-u len]
+          [-c host_certificate_file] [-E log_file] [-f config_file]
+          [-g login_grace_time] [-h host_key_file] [-k key_gen_time]
+          [-o option] [-p port] [-u len]
 
 DESCRIPTION
      sshd (OpenSSH Daemon) is the daemon program for ssh(1).  Together these
-     programs replace rlogin(1) and rsh(1), and provide secure encrypted
+     programs replace rlogin and rsh, and provide secure encrypted
      communications between two untrusted hosts over an insecure network.
 
      sshd listens for connections from clients.  It is normally started at
@@ -60,8 +61,10 @@ DESCRIPTION
              option is only intended for debugging for the server.  Multiple
              -d options increase the debugging level.  Maximum is 3.
 
-     -e      When this option is specified, sshd will send the output to the
-             standard error instead of the system log.
+     -E log_file
+             Append debug logs to log_file instead of the system log.
+
+     -e      Write debug logs to standard error instead of the system log.
 
      -f config_file
              Specifies the name of the configuration file.  The default is
@@ -79,10 +82,11 @@ DESCRIPTION
              be given if sshd is not run as root (as the normal host key files
              are normally not readable by anyone but root).  The default is
              /etc/ssh/ssh_host_key for protocol version 1, and
-             /etc/ssh/ssh_host_dsa_key, /etc/ssh/ssh_host_ecdsa_key and
-             /etc/ssh/ssh_host_rsa_key for protocol version 2.  It is possible
-             to have multiple host key files for the different protocol
-             versions and host key algorithms.
+             /etc/ssh/ssh_host_dsa_key, /etc/ssh/ssh_host_ecdsa_key.
+             /etc/ssh/ssh_host_ed25519_key and /etc/ssh/ssh_host_rsa_key for
+             protocol version 2.  It is possible to have multiple host key
+             files for the different protocol versions and host key
+             algorithms.
 
      -i      Specifies that sshd is being run from inetd(8).  sshd is normally
              not run from inetd because it needs to generate the server key
@@ -144,9 +148,9 @@ DESCRIPTION
 AUTHENTICATION
      The OpenSSH SSH daemon supports SSH protocols 1 and 2.  The default is to
      use protocol 2 only, though this can be changed via the Protocol option
-     in sshd_config(5).  Protocol 2 supports DSA, ECDSA and RSA keys; protocol
-     1 only supports RSA keys.  For both protocols, each host has a host-
-     specific key, normally 2048 bits, used to identify the host.
+     in sshd_config(5).  Protocol 2 supports DSA, ECDSA, ED25519 and RSA keys;
+     protocol 1 only supports RSA keys.  For both protocols, each host has a
+     host-specific key, normally 2048 bits, used to identify the host.
 
      Forward security for protocol 1 is provided through an additional server
      key, normally 768 bits, generated when the server starts.  This key is
@@ -169,7 +173,7 @@ AUTHENTICATION
      client selects the encryption algorithm to use from those offered by the
      server.  Additionally, session integrity is provided through a
      cryptographic message authentication code (hmac-md5, hmac-sha1, umac-64,
-     hmac-ripemd160, hmac-sha2-256 or hmac-sha2-512).
+     umac-128, hmac-ripemd160, hmac-sha2-256 or hmac-sha2-512).
 
      Finally, the server and the client enter an authentication dialog.  The
      client tries to authenticate itself using host-based authentication,
@@ -224,9 +228,10 @@ LOGIN PROCESS
 
            7.   Changes to user's home directory.
 
-           8.   If ~/.ssh/rc exists, runs it; else if /etc/ssh/sshrc exists,
-                runs it; otherwise runs xauth.  The ``rc'' files are given the
-                X11 authentication protocol and cookie in standard input.  See
+           8.   If ~/.ssh/rc exists and the sshd_config(5) PermitUserRC option
+                is set, runs it; else if /etc/ssh/sshrc exists, runs it;
+                otherwise runs xauth.  The ``rc'' files are given the X11
+                authentication protocol and cookie in standard input.  See
                 SSHRC, below.
 
            9.   Runs user's shell or command.
@@ -275,15 +280,15 @@ AUTHORIZED_KEYS FILE FORMAT
      give the RSA key for protocol version 1; the comment field is not used
      for anything (but may be convenient for the user to identify the key).
      For protocol version 2 the keytype is ``ecdsa-sha2-nistp256'',
-     ``ecdsa-sha2-nistp384'', ``ecdsa-sha2-nistp521'', ``ssh-dss'' or
-     ``ssh-rsa''.
+     ``ecdsa-sha2-nistp384'', ``ecdsa-sha2-nistp521'', ``ssh-ed25519'',
+     ``ssh-dss'' or ``ssh-rsa''.
 
      Note that lines in this file are usually several hundred bytes long
      (because of the size of the public key encoding) up to a limit of 8
      kilobytes, which permits DSA keys up to 8 kilobits and RSA keys up to 16
      kilobits.  You don't want to type them in; instead, copy the
-     identity.pub, id_dsa.pub, id_ecdsa.pub, or the id_rsa.pub file and edit
-     it.
+     identity.pub, id_dsa.pub, id_ecdsa.pub, id_ed25519.pub, or the id_rsa.pub
+     file and edit it.
 
      sshd enforces a minimum RSA key modulus size for protocol 1 and protocol
      2 keys of 768 bits.
@@ -509,11 +514,11 @@ FILES
              for the user, and not accessible by others.
 
      ~/.ssh/authorized_keys
-             Lists the public keys (DSA/ECDSA/RSA) that can be used for
-             logging in as this user.  The format of this file is described
-             above.  The content of the file is not highly sensitive, but the
-             recommended permissions are read/write for the user, and not
-             accessible by others.
+             Lists the public keys (DSA, ECDSA, ED25519, RSA) that can be used
+             for logging in as this user.  The format of this file is
+             described above.  The content of the file is not highly
+             sensitive, but the recommended permissions are read/write for the
+             user, and not accessible by others.
 
              If this file, the ~/.ssh directory, or the user's home directory
              are writable by other users, then the file could be modified or
@@ -541,11 +546,6 @@ FILES
              directory becomes accessible.  This file should be writable only
              by the user, and need not be readable by anyone else.
 
-     /etc/hosts.allow
-     /etc/hosts.deny
-             Access controls that should be enforced by tcp-wrappers are
-             defined here.  Further details are described in hosts_access(5).
-
      /etc/hosts.equiv
              This file is for host-based authentication (see ssh(1)).  It
              should only be writable by root.
@@ -571,6 +571,7 @@ FILES
      /etc/ssh/ssh_host_key
      /etc/ssh/ssh_host_dsa_key
      /etc/ssh/ssh_host_ecdsa_key
+     /etc/ssh/ssh_host_ed25519_key
      /etc/ssh/ssh_host_rsa_key
              These files contain the private parts of the host keys.  These
              files should only be owned by root, readable only by root, and
@@ -580,6 +581,7 @@ FILES
      /etc/ssh/ssh_host_key.pub
      /etc/ssh/ssh_host_dsa_key.pub
      /etc/ssh/ssh_host_ecdsa_key.pub
+     /etc/ssh/ssh_host_ed25519_key.pub
      /etc/ssh/ssh_host_rsa_key.pub
              These files contain the public parts of the host keys.  These
              files should be world-readable but writable only by root.  Their
@@ -619,8 +621,8 @@ FILES
 
 SEE ALSO
      scp(1), sftp(1), ssh(1), ssh-add(1), ssh-agent(1), ssh-keygen(1),
-     ssh-keyscan(1), chroot(2), hosts_access(5), login.conf(5), moduli(5),
-     sshd_config(5), inetd(8), sftp-server(8)
+     ssh-keyscan(1), chroot(2), login.conf(5), moduli(5), sshd_config(5),
+     inetd(8), sftp-server(8)
 
 AUTHORS
      OpenSSH is a derivative of the original and free ssh 1.2.12 release by
@@ -630,8 +632,4 @@ AUTHORS
      versions 1.5 and 2.0.  Niels Provos and Markus Friedl contributed support
      for privilege separation.
 
-CAVEATS
-     System security is not improved unless rshd, rlogind, and rexecd are
-     disabled (thus completely disabling rlogin and rsh into the machine).
-
-OpenBSD 5.2                      June 18, 2012                     OpenBSD 5.2
+OpenBSD 5.6                      July 3, 2014                      OpenBSD 5.6

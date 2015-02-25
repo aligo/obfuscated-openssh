@@ -25,6 +25,8 @@
  */
 /* #define SANDBOX_SECCOMP_FILTER_DEBUG 1 */
 
+/* XXX it should be possible to do logging via the log socket safely */
+
 #ifdef SANDBOX_SECCOMP_FILTER_DEBUG
 /* Use the kernel headers in case of an older toolchain. */
 # include <asm/siginfo.h>
@@ -44,6 +46,7 @@
 #include <linux/audit.h>
 #include <linux/filter.h>
 #include <linux/seccomp.h>
+#include <elf.h>
 
 #include <asm/unistd.h>
 
@@ -88,12 +91,19 @@ static const struct sock_filter preauth_insns[] = {
 	BPF_STMT(BPF_LD+BPF_W+BPF_ABS,
 		offsetof(struct seccomp_data, nr)),
 	SC_DENY(open, EACCES),
+	SC_DENY(stat, EACCES),
 	SC_ALLOW(getpid),
 	SC_ALLOW(gettimeofday),
+	SC_ALLOW(clock_gettime),
+#ifdef __NR_time /* not defined on EABI ARM */
 	SC_ALLOW(time),
+#endif
 	SC_ALLOW(read),
 	SC_ALLOW(write),
 	SC_ALLOW(close),
+#ifdef __NR_shutdown /* not defined on archs that go via socketcall(2) */
+	SC_ALLOW(shutdown),
+#endif
 	SC_ALLOW(brk),
 	SC_ALLOW(poll),
 #ifdef __NR__newselect
@@ -102,7 +112,16 @@ static const struct sock_filter preauth_insns[] = {
 	SC_ALLOW(select),
 #endif
 	SC_ALLOW(madvise),
+#ifdef __NR_mmap2 /* EABI ARM only has mmap2() */
+	SC_ALLOW(mmap2),
+#endif
+#ifdef __NR_mmap
 	SC_ALLOW(mmap),
+#endif
+#ifdef __dietlibc__
+	SC_ALLOW(mremap),
+	SC_ALLOW(exit),
+#endif
 	SC_ALLOW(munmap),
 	SC_ALLOW(exit_group),
 #ifdef __NR_rt_sigprocmask
@@ -123,7 +142,7 @@ struct ssh_sandbox {
 };
 
 struct ssh_sandbox *
-ssh_sandbox_init(void)
+ssh_sandbox_init(struct monitor *monitor)
 {
 	struct ssh_sandbox *box;
 

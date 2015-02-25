@@ -1,4 +1,4 @@
-SSH-ADD(1)                 OpenBSD Reference Manual                 SSH-ADD(1)
+SSH-ADD(1)                  General Commands Manual                 SSH-ADD(1)
 
 NAME
      ssh-add - adds private key identities to the authentication agent
@@ -11,11 +11,11 @@ SYNOPSIS
 DESCRIPTION
      ssh-add adds private key identities to the authentication agent,
      ssh-agent(1).  When run without arguments, it adds the files
-     ~/.ssh/id_rsa, ~/.ssh/id_dsa, ~/.ssh/id_ecdsa and ~/.ssh/identity.  After
-     loading a private key, ssh-add will try to load corresponding certificate
-     information from the filename obtained by appending -cert.pub to the name
-     of the private key file.  Alternative file names can be given on the
-     command line.
+     ~/.ssh/id_rsa, ~/.ssh/id_dsa, ~/.ssh/id_ecdsa, ~/.ssh/id_ed25519 and
+     ~/.ssh/identity.  After loading a private key, ssh-add will try to load
+     corresponding certificate information from the filename obtained by
+     appending -cert.pub to the name of the private key file.  Alternative
+     file names can be given on the command line.
 
      If any file requires a passphrase, ssh-add asks for the passphrase from
      the user.  The passphrase is read from the user's tty.  ssh-add retries
@@ -37,16 +37,17 @@ DESCRIPTION
 
      -d      Instead of adding identities, removes identities from the agent.
              If ssh-add has been run without arguments, the keys for the
-             default identities will be removed.  Otherwise, the argument list
-             will be interpreted as a list of paths to public key files and
-             matching keys will be removed from the agent.  If no public key
-             is found at a given path, ssh-add will append .pub and retry.
+             default identities and their corresponding certificates will be
+             removed.  Otherwise, the argument list will be interpreted as a
+             list of paths to public key files to specify keys and
+             certificates to be removed from the agent.  If no public key is
+             found at a given path, ssh-add will append .pub and retry.
 
      -e pkcs11
              Remove keys provided by the PKCS#11 shared library pkcs11.
 
-     -k      When loading keys into the agent, load plain private keys only
-             and skip certificates.
+     -k      When loading keys into or deleting keys from the agent, process
+             plain private keys only and skip certificates.
 
      -L      Lists public key parameters of all identities currently
              represented by the agent.
@@ -94,6 +95,10 @@ FILES
              Contains the protocol version 2 ECDSA authentication identity of
              the user.
 
+     ~/.ssh/id_ed25519
+             Contains the protocol version 2 ED25519 authentication identity
+             of the user.
+
      ~/.ssh/id_rsa
              Contains the protocol version 2 RSA authentication identity of
              the user.
@@ -115,4 +120,4 @@ AUTHORS
      created OpenSSH.  Markus Friedl contributed the support for SSH protocol
      versions 1.5 and 2.0.
 
-OpenBSD 5.2                    October 18, 2011                    OpenBSD 5.2
+OpenBSD 5.6                    December 7, 2013                    OpenBSD 5.6
