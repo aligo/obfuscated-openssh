@@ -1,5 +1,3 @@
-/* $Id: openssl-compat.h,v 1.31 2014/08/29 18:18:29 djm Exp $ */
-
 /*
  * Copyright (c) 2005 Darren Tucker <dtucker@zip.com.au>
  *
@@ -20,6 +18,8 @@
 #define _OPENSSL_COMPAT_H
 
 #include "includes.h"
+#ifdef WITH_OPENSSL
+
 #include <openssl/opensslv.h>
 #include <openssl/evp.h>
 #include <openssl/rsa.h>
@@ -69,6 +69,12 @@ void ssh_aes_ctr_iv(EVP_CIPHER_CTX *, int, u_char *, size_t);
 # endif
 #endif
 
+#if defined(HAVE_EVP_RIPEMD160)
+# if defined(OPENSSL_NO_RIPEMD) || defined(OPENSSL_NO_RMD160)
+#  undef HAVE_EVP_RIPEMD160
+# endif
+#endif
+
 /*
  * We overload some of the OpenSSL crypto functions with ssh_* equivalents
  * to automatically handle OpenSSL engine initialisation.
@@ -90,4 +96,5 @@ void ssh_OpenSSL_add_all_algorithms(void);
 
 #endif	/* SSH_DONT_OVERLOAD_OPENSSL_FUNCS */
 
+#endif /* WITH_OPENSSL */
 #endif /* _OPENSSL_COMPAT_H */

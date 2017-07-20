@@ -1,4 +1,4 @@
-/* $OpenBSD: monitor_wrap.c,v 1.80 2014/04/29 18:01:49 markus Exp $ */
+/* $OpenBSD: monitor_wrap.c,v 1.89 2016/08/13 17:47:41 markus Exp $ */
 /*
  * Copyright 2002 Niels Provos <provos@citi.umich.edu>
  * Copyright 2002 Markus Friedl <markus@openbsd.org>
@@ -60,6 +60,7 @@
 #include "packet.h"
 #include "mac.h"
 #include "log.h"
+#include "auth-pam.h"
 #ifdef TARGET_OS_MAC    /* XXX Broken krb5 headers on Mac */
 #undef TARGET_OS_MAC
 #include "zlib.h"
@@ -80,10 +81,10 @@
 #include "channels.h"
 #include "session.h"
 #include "servconf.h"
-#include "roaming.h"
+
+#include "ssherr.h"
 
 /* Imports */
-extern int compat20;
 extern z_stream incoming_stream;
 extern z_stream outgoing_stream;
 extern struct monitor *pmonitor;
@@ -215,16 +216,18 @@ mm_choose_dh(int min, int nbits, int max)
 #endif
 
 int
-mm_key_sign(Key *key, u_char **sigp, u_int *lenp, u_char *data, u_int datalen)
+mm_key_sign(Key *key, u_char **sigp, u_int *lenp,
+    const u_char *data, u_int datalen, const char *hostkey_alg)
 {
-	Kex *kex = *pmonitor->m_pkex;
+	struct kex *kex = *pmonitor->m_pkex;
 	Buffer m;
 
 	debug3("%s entering", __func__);
 
 	buffer_init(&m);
-	buffer_put_int(&m, kex->host_key_index(key));
+	buffer_put_int(&m, kex->host_key_index(key, 0, active_state));
 	buffer_put_string(&m, data, datalen);
+	buffer_put_cstring(&m, hostkey_alg);
 
 	mm_request_send(pmonitor->m_recvfd, MONITOR_REQ_SIGN, &m);
 
@@ -359,6 +362,9 @@ mm_auth_password(Authctxt *authctxt, char *password)
 	mm_request_receive_expect(pmonitor->m_recvfd, MONITOR_ANS_AUTHPASSWORD, &m);
 
 	authenticated = buffer_get_int(&m);
+#ifdef USE_PAM
+	sshpam_set_maxtries_reached(buffer_get_int(&m));
+#endif
 
 	buffer_free(&m);
 
@@ -368,32 +374,22 @@ mm_auth_password(Authctxt *authctxt, char *password)
 }
 
 int
-mm_user_key_allowed(struct passwd *pw, Key *key)
+mm_user_key_allowed(struct passwd *pw, Key *key, int pubkey_auth_attempt)
 {
-	return (mm_key_allowed(MM_USERKEY, NULL, NULL, key));
+	return (mm_key_allowed(MM_USERKEY, NULL, NULL, key,
+	    pubkey_auth_attempt));
 }
 
 int
-mm_hostbased_key_allowed(struct passwd *pw, char *user, char *host,
+mm_hostbased_key_allowed(struct passwd *pw, const char *user, const char *host,
     Key *key)
 {
-	return (mm_key_allowed(MM_HOSTKEY, user, host, key));
+	return (mm_key_allowed(MM_HOSTKEY, user, host, key, 0));
 }
 
 int
-mm_auth_rhosts_rsa_key_allowed(struct passwd *pw, char *user,
-    char *host, Key *key)
-{
-	int ret;
-
-	key->type = KEY_RSA; /* XXX hack for key_to_blob */
-	ret = mm_key_allowed(MM_RSAHOSTKEY, user, host, key);
-	key->type = KEY_RSA1;
-	return (ret);
-}
-
-int
-mm_key_allowed(enum mm_keytype type, char *user, char *host, Key *key)
+mm_key_allowed(enum mm_keytype type, const char *user, const char *host,
+    Key *key, int pubkey_auth_attempt)
 {
 	Buffer m;
 	u_char *blob;
@@ -411,6 +407,7 @@ mm_key_allowed(enum mm_keytype type, char *user, char *host, Key *key)
 	buffer_put_cstring(&m, user ? user : "");
 	buffer_put_cstring(&m, host ? host : "");
 	buffer_put_string(&m, blob, len);
+	buffer_put_int(&m, pubkey_auth_attempt);
 	free(blob);
 
 	mm_request_send(pmonitor->m_recvfd, MONITOR_REQ_KEYALLOWED, &m);
@@ -468,239 +465,21 @@ mm_key_verify(Key *key, u_char *sig, u_int siglen, u_char *data, u_int datalen)
 	return (verified);
 }
 
-/* Export key state after authentication */
-Newkeys *
-mm_newkeys_from_blob(u_char *blob, int blen)
-{
-	Buffer b;
-	u_int len;
-	Newkeys *newkey = NULL;
-	Enc *enc;
-	Mac *mac;
-	Comp *comp;
-
-	debug3("%s: %p(%d)", __func__, blob, blen);
-#ifdef DEBUG_PK
-	dump_base64(stderr, blob, blen);
-#endif
-	buffer_init(&b);
-	buffer_append(&b, blob, blen);
-
-	newkey = xcalloc(1, sizeof(*newkey));
-	enc = &newkey->enc;
-	mac = &newkey->mac;
-	comp = &newkey->comp;
-
-	/* Enc structure */
-	enc->name = buffer_get_string(&b, NULL);
-	buffer_get(&b, &enc->cipher, sizeof(enc->cipher));
-	enc->enabled = buffer_get_int(&b);
-	enc->block_size = buffer_get_int(&b);
-	enc->key = buffer_get_string(&b, &enc->key_len);
-	enc->iv = buffer_get_string(&b, &enc->iv_len);
-
-	if (enc->name == NULL || cipher_by_name(enc->name) != enc->cipher)
-		fatal("%s: bad cipher name %s or pointer %p", __func__,
-		    enc->name, enc->cipher);
-
-	/* Mac structure */
-	if (cipher_authlen(enc->cipher) == 0) {
-		mac->name = buffer_get_string(&b, NULL);
-		if (mac->name == NULL || mac_setup(mac, mac->name) == -1)
-			fatal("%s: can not setup mac %s", __func__, mac->name);
-		mac->enabled = buffer_get_int(&b);
-		mac->key = buffer_get_string(&b, &len);
-		if (len > mac->key_len)
-			fatal("%s: bad mac key length: %u > %d", __func__, len,
-			    mac->key_len);
-		mac->key_len = len;
-	}
-
-	/* Comp structure */
-	comp->type = buffer_get_int(&b);
-	comp->enabled = buffer_get_int(&b);
-	comp->name = buffer_get_string(&b, NULL);
-
-	len = buffer_len(&b);
-	if (len != 0)
-		error("newkeys_from_blob: remaining bytes in blob %u", len);
-	buffer_free(&b);
-	return (newkey);
-}
-
-int
-mm_newkeys_to_blob(int mode, u_char **blobp, u_int *lenp)
-{
-	Buffer b;
-	int len;
-	Enc *enc;
-	Mac *mac;
-	Comp *comp;
-	Newkeys *newkey = (Newkeys *)packet_get_newkeys(mode);
-
-	debug3("%s: converting %p", __func__, newkey);
-
-	if (newkey == NULL) {
-		error("%s: newkey == NULL", __func__);
-		return 0;
-	}
-	enc = &newkey->enc;
-	mac = &newkey->mac;
-	comp = &newkey->comp;
-
-	buffer_init(&b);
-	/* Enc structure */
-	buffer_put_cstring(&b, enc->name);
-	/* The cipher struct is constant and shared, you export pointer */
-	buffer_append(&b, &enc->cipher, sizeof(enc->cipher));
-	buffer_put_int(&b, enc->enabled);
-	buffer_put_int(&b, enc->block_size);
-	buffer_put_string(&b, enc->key, enc->key_len);
-	packet_get_keyiv(mode, enc->iv, enc->iv_len);
-	buffer_put_string(&b, enc->iv, enc->iv_len);
-
-	/* Mac structure */
-	if (cipher_authlen(enc->cipher) == 0) {
-		buffer_put_cstring(&b, mac->name);
-		buffer_put_int(&b, mac->enabled);
-		buffer_put_string(&b, mac->key, mac->key_len);
-	}
-
-	/* Comp structure */
-	buffer_put_int(&b, comp->type);
-	buffer_put_int(&b, comp->enabled);
-	buffer_put_cstring(&b, comp->name);
-
-	len = buffer_len(&b);
-	if (lenp != NULL)
-		*lenp = len;
-	if (blobp != NULL) {
-		*blobp = xmalloc(len);
-		memcpy(*blobp, buffer_ptr(&b), len);
-	}
-	explicit_bzero(buffer_ptr(&b), len);
-	buffer_free(&b);
-	return len;
-}
-
-static void
-mm_send_kex(Buffer *m, Kex *kex)
-{
-	buffer_put_string(m, kex->session_id, kex->session_id_len);
-	buffer_put_int(m, kex->we_need);
-	buffer_put_int(m, kex->hostkey_type);
-	buffer_put_int(m, kex->kex_type);
-	buffer_put_string(m, buffer_ptr(&kex->my), buffer_len(&kex->my));
-	buffer_put_string(m, buffer_ptr(&kex->peer), buffer_len(&kex->peer));
-	buffer_put_int(m, kex->flags);
-	buffer_put_cstring(m, kex->client_version_string);
-	buffer_put_cstring(m, kex->server_version_string);
-}
-
 void
 mm_send_keystate(struct monitor *monitor)
 {
-	Buffer m, *input, *output;
-	u_char *blob, *p;
-	u_int bloblen, plen;
-	u_int32_t seqnr, packets;
-	u_int64_t blocks, bytes;
+	struct ssh *ssh = active_state;		/* XXX */
+	struct sshbuf *m;
+	int r;
 
-	buffer_init(&m);
-
-	if (!compat20) {
-		u_char iv[24];
-		u_char *key;
-		u_int ivlen, keylen;
-
-		buffer_put_int(&m, packet_get_protocol_flags());
-
-		buffer_put_int(&m, packet_get_ssh1_cipher());
-
-		debug3("%s: Sending ssh1 KEY+IV", __func__);
-		keylen = packet_get_encryption_key(NULL);
-		key = xmalloc(keylen+1);	/* add 1 if keylen == 0 */
-		keylen = packet_get_encryption_key(key);
-		buffer_put_string(&m, key, keylen);
-		explicit_bzero(key, keylen);
-		free(key);
-
-		ivlen = packet_get_keyiv_len(MODE_OUT);
-		packet_get_keyiv(MODE_OUT, iv, ivlen);
-		buffer_put_string(&m, iv, ivlen);
-		ivlen = packet_get_keyiv_len(MODE_IN);
-		packet_get_keyiv(MODE_IN, iv, ivlen);
-		buffer_put_string(&m, iv, ivlen);
-		goto skip;
-	} else {
-		/* Kex for rekeying */
-		mm_send_kex(&m, *monitor->m_pkex);
-	}
-
-	debug3("%s: Sending new keys: %p %p",
-	    __func__, packet_get_newkeys(MODE_OUT),
-	    packet_get_newkeys(MODE_IN));
-
-	/* Keys from Kex */
-	if (!mm_newkeys_to_blob(MODE_OUT, &blob, &bloblen))
-		fatal("%s: conversion of newkeys failed", __func__);
-
-	buffer_put_string(&m, blob, bloblen);
-	free(blob);
-
-	if (!mm_newkeys_to_blob(MODE_IN, &blob, &bloblen))
-		fatal("%s: conversion of newkeys failed", __func__);
-
-	buffer_put_string(&m, blob, bloblen);
-	free(blob);
-
-	packet_get_state(MODE_OUT, &seqnr, &blocks, &packets, &bytes);
-	buffer_put_int(&m, seqnr);
-	buffer_put_int64(&m, blocks);
-	buffer_put_int(&m, packets);
-	buffer_put_int64(&m, bytes);
-	packet_get_state(MODE_IN, &seqnr, &blocks, &packets, &bytes);
-	buffer_put_int(&m, seqnr);
-	buffer_put_int64(&m, blocks);
-	buffer_put_int(&m, packets);
-	buffer_put_int64(&m, bytes);
-
-	debug3("%s: New keys have been sent", __func__);
- skip:
-	/* More key context */
-	plen = packet_get_keycontext(MODE_OUT, NULL);
-	p = xmalloc(plen+1);
-	packet_get_keycontext(MODE_OUT, p);
-	buffer_put_string(&m, p, plen);
-	free(p);
-
-	plen = packet_get_keycontext(MODE_IN, NULL);
-	p = xmalloc(plen+1);
-	packet_get_keycontext(MODE_IN, p);
-	buffer_put_string(&m, p, plen);
-	free(p);
-
-	/* Compression state */
-	debug3("%s: Sending compression state", __func__);
-	buffer_put_string(&m, &outgoing_stream, sizeof(outgoing_stream));
-	buffer_put_string(&m, &incoming_stream, sizeof(incoming_stream));
-
-	/* Network I/O buffers */
-	input = (Buffer *)packet_get_input();
-	output = (Buffer *)packet_get_output();
-	buffer_put_string(&m, buffer_ptr(input), buffer_len(input));
-	buffer_put_string(&m, buffer_ptr(output), buffer_len(output));
-
-	/* Roaming */
-	if (compat20) {
-		buffer_put_int64(&m, get_sent_bytes());
-		buffer_put_int64(&m, get_recv_bytes());
-	}
-
-	mm_request_send(monitor->m_recvfd, MONITOR_REQ_KEYEXPORT, &m);
+	if ((m = sshbuf_new()) == NULL)
+		fatal("%s: sshbuf_new failed", __func__);
+	if ((r = ssh_packet_get_state(ssh, m)) != 0)
+		fatal("%s: get_state failed: %s",
+		    __func__, ssh_err(r));
+	mm_request_send(monitor->m_recvfd, MONITOR_REQ_KEYEXPORT, m);
 	debug3("%s: Finished sending state", __func__);
-
-	buffer_free(&m);
+	sshbuf_free(m);
 }
 
 int
@@ -826,7 +605,6 @@ mm_sshpam_init_ctx(Authctxt *authctxt)
 
 	debug3("%s", __func__);
 	buffer_init(&m);
-	buffer_put_cstring(&m, authctxt->user);
 	mm_request_send(pmonitor->m_recvfd, MONITOR_REQ_PAM_INIT_CTX, &m);
 	debug3("%s: waiting for MONITOR_ANS_PAM_INIT_CTX", __func__);
 	mm_request_receive_expect(pmonitor->m_recvfd, MONITOR_ANS_PAM_INIT_CTX, &m);
@@ -857,6 +635,7 @@ mm_sshpam_query(void *ctx, char **name, char **info,
 	debug3("%s: pam_query returned %d", __func__, ret);
 	*name = buffer_get_string(&m, NULL);
 	*info = buffer_get_string(&m, NULL);
+	sshpam_set_maxtries_reached(buffer_get_int(&m));
 	*num = buffer_get_int(&m);
 	if (*num > PAM_MAX_NUM_MSG)
 		fatal("%s: recieved %u PAM messages, expected <= %u",
@@ -917,28 +696,6 @@ mm_terminate(void)
 	mm_request_send(pmonitor->m_recvfd, MONITOR_REQ_TERM, &m);
 	buffer_free(&m);
 }
-
-#ifdef WITH_SSH1
-int
-mm_ssh1_session_key(BIGNUM *num)
-{
-	int rsafail;
-	Buffer m;
-
-	buffer_init(&m);
-	buffer_put_bignum2(&m, num);
-	mm_request_send(pmonitor->m_recvfd, MONITOR_REQ_SESSKEY, &m);
-
-	mm_request_receive_expect(pmonitor->m_recvfd, MONITOR_ANS_SESSKEY, &m);
-
-	rsafail = buffer_get_int(&m);
-	buffer_get_bignum2(&m, num);
-
-	buffer_free(&m);
-
-	return (rsafail);
-}
-#endif
 
 static void
 mm_chall_setup(char **name, char **infotxt, u_int *numprompts,
@@ -1069,120 +826,6 @@ mm_skey_respond(void *ctx, u_int numresponses, char **responses)
 	return ((authok == 0) ? -1 : 0);
 }
 #endif /* SKEY */
-
-void
-mm_ssh1_session_id(u_char session_id[16])
-{
-	Buffer m;
-	int i;
-
-	debug3("%s entering", __func__);
-
-	buffer_init(&m);
-	for (i = 0; i < 16; i++)
-		buffer_put_char(&m, session_id[i]);
-
-	mm_request_send(pmonitor->m_recvfd, MONITOR_REQ_SESSID, &m);
-	buffer_free(&m);
-}
-
-#ifdef WITH_SSH1
-int
-mm_auth_rsa_key_allowed(struct passwd *pw, BIGNUM *client_n, Key **rkey)
-{
-	Buffer m;
-	Key *key;
-	u_char *blob;
-	u_int blen;
-	int allowed = 0, have_forced = 0;
-
-	debug3("%s entering", __func__);
-
-	buffer_init(&m);
-	buffer_put_bignum2(&m, client_n);
-
-	mm_request_send(pmonitor->m_recvfd, MONITOR_REQ_RSAKEYALLOWED, &m);
-	mm_request_receive_expect(pmonitor->m_recvfd, MONITOR_ANS_RSAKEYALLOWED, &m);
-
-	allowed = buffer_get_int(&m);
-
-	/* fake forced command */
-	auth_clear_options();
-	have_forced = buffer_get_int(&m);
-	forced_command = have_forced ? xstrdup("true") : NULL;
-
-	if (allowed && rkey != NULL) {
-		blob = buffer_get_string(&m, &blen);
-		if ((key = key_from_blob(blob, blen)) == NULL)
-			fatal("%s: key_from_blob failed", __func__);
-		*rkey = key;
-		free(blob);
-	}
-	buffer_free(&m);
-
-	return (allowed);
-}
-
-BIGNUM *
-mm_auth_rsa_generate_challenge(Key *key)
-{
-	Buffer m;
-	BIGNUM *challenge;
-	u_char *blob;
-	u_int blen;
-
-	debug3("%s entering", __func__);
-
-	if ((challenge = BN_new()) == NULL)
-		fatal("%s: BN_new failed", __func__);
-
-	key->type = KEY_RSA;    /* XXX cheat for key_to_blob */
-	if (key_to_blob(key, &blob, &blen) == 0)
-		fatal("%s: key_to_blob failed", __func__);
-	key->type = KEY_RSA1;
-
-	buffer_init(&m);
-	buffer_put_string(&m, blob, blen);
-	free(blob);
-
-	mm_request_send(pmonitor->m_recvfd, MONITOR_REQ_RSACHALLENGE, &m);
-	mm_request_receive_expect(pmonitor->m_recvfd, MONITOR_ANS_RSACHALLENGE, &m);
-
-	buffer_get_bignum2(&m, challenge);
-	buffer_free(&m);
-
-	return (challenge);
-}
-
-int
-mm_auth_rsa_verify_response(Key *key, BIGNUM *p, u_char response[16])
-{
-	Buffer m;
-	u_char *blob;
-	u_int blen;
-	int success = 0;
-
-	debug3("%s entering", __func__);
-
-	key->type = KEY_RSA;    /* XXX cheat for key_to_blob */
-	if (key_to_blob(key, &blob, &blen) == 0)
-		fatal("%s: key_to_blob failed", __func__);
-	key->type = KEY_RSA1;
-
-	buffer_init(&m);
-	buffer_put_string(&m, blob, blen);
-	buffer_put_string(&m, response, 16);
-	free(blob);
-
-	mm_request_send(pmonitor->m_recvfd, MONITOR_REQ_RSARESPONSE, &m);
-	mm_request_receive_expect(pmonitor->m_recvfd, MONITOR_ANS_RSARESPONSE, &m);
-
-	success = buffer_get_int(&m);
-	buffer_free(&m);
-
-	return (success);
-}
-#endif
 
 #ifdef SSH_AUDIT_EVENTS
 void
