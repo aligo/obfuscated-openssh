@@ -1,4 +1,4 @@
-/* $OpenBSD: digest-openssl.c,v 1.4 2014/07/03 03:26:43 djm Exp $ */
+/* $OpenBSD: digest-openssl.c,v 1.6 2017/03/10 02:59:51 dtucker Exp $ */
 /*
  * Copyright (c) 2013 Damien Miller <djm@mindrot.org>
  *
@@ -16,6 +16,8 @@
  */
 
 #include "includes.h"
+
+#ifdef WITH_OPENSSL
 
 #include <sys/types.h>
 #include <limits.h>
@@ -72,6 +74,26 @@ ssh_digest_by_alg(int alg)
 	if (digests[alg].mdfunc == NULL)
 		return NULL;
 	return &(digests[alg]);
+}
+
+int
+ssh_digest_alg_by_name(const char *name)
+{
+	int alg;
+
+	for (alg = 0; digests[alg].id != -1; alg++) {
+		if (strcasecmp(name, digests[alg].name) == 0)
+			return digests[alg].id;
+	}
+	return -1;
+}
+
+const char *
+ssh_digest_alg_name(int alg)
+{
+	const struct ssh_digest *digest = ssh_digest_by_alg(alg);
+
+	return digest == NULL ? NULL : digest->name;
 }
 
 size_t
@@ -136,7 +158,7 @@ ssh_digest_final(struct ssh_digest_ctx *ctx, u_char *d, size_t dlen)
 	const struct ssh_digest *digest = ssh_digest_by_alg(ctx->alg);
 	u_int l = dlen;
 
-	if (dlen > UINT_MAX)
+	if (digest == NULL || dlen > UINT_MAX)
 		return SSH_ERR_INVALID_ARGUMENT;
 	if (dlen < digest->digest_len) /* No truncation allowed */
 		return SSH_ERR_INVALID_ARGUMENT;
@@ -180,3 +202,4 @@ ssh_digest_buffer(int alg, const struct sshbuf *b, u_char *d, size_t dlen)
 {
 	return ssh_digest_memory(alg, sshbuf_ptr(b), sshbuf_len(b), d, dlen);
 }
+#endif /* WITH_OPENSSL */

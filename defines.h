@@ -25,9 +25,6 @@
 #ifndef _DEFINES_H
 #define _DEFINES_H
 
-/* $Id: defines.h,v 1.183 2014/09/02 19:33:26 djm Exp $ */
-
-
 /* Constants */
 
 #if defined(HAVE_DECL_SHUT_RD) && HAVE_DECL_SHUT_RD == 0
@@ -40,6 +37,19 @@ enum
 # define SHUT_RD   SHUT_RD
 # define SHUT_WR   SHUT_WR
 # define SHUT_RDWR SHUT_RDWR
+#endif
+
+/*
+ * Cygwin doesn't really have a notion of reserved ports.  It is still
+ * is useful on the client side so for compatibility it defines as 1024 via
+ * netinet/in.h inside an enum.  We * don't actually want that restriction
+ * so we want to set that to zero, but we can't do it direct in config.h
+ * because it'll cause a conflicting definition the first time we include
+ * netinet/in.h.
+ */
+
+#ifdef HAVE_CYGWIN
+#define IPPORT_RESERVED 0
 #endif
 
 /*
@@ -104,6 +114,17 @@ enum
 #  endif /* BROKEN_REALPATH */
 # endif /* PATH_MAX */
 #endif /* MAXPATHLEN */
+
+#ifndef HOST_NAME_MAX
+# include "netdb.h" /* for MAXHOSTNAMELEN */
+# if defined(_POSIX_HOST_NAME_MAX)
+#  define HOST_NAME_MAX _POSIX_HOST_NAME_MAX
+# elif defined(MAXHOSTNAMELEN)
+#  define HOST_NAME_MAX MAXHOSTNAMELEN
+# else
+#  define HOST_NAME_MAX	255
+# endif
+#endif /* HOST_NAME_MAX */
 
 #if defined(HAVE_DECL_MAXSYMLINKS) && HAVE_DECL_MAXSYMLINKS == 0
 # define MAXSYMLINKS 5
@@ -586,6 +607,12 @@ struct winsize {
 # undef HAVE_GAI_STRERROR
 #endif
 
+#if defined(HAVE_GETADDRINFO)
+# if defined(HAVE_DECL_AI_NUMERICSERV) && HAVE_DECL_AI_NUMERICSERV == 0
+#   define AI_NUMERICSERV	0
+# endif
+#endif
+
 #if defined(BROKEN_UPDWTMPX) && defined(HAVE_UPDWTMPX)
 # undef HAVE_UPDWTMPX
 #endif
@@ -805,13 +832,12 @@ struct winsize {
 # define SSH_IOBUFSZ 8192
 #endif
 
-#ifndef _NSIG
-# ifdef NSIG
-#  define _NSIG NSIG
-# else
-#  define _NSIG 128
-# endif
-#endif
+/*
+ * We want functions in openbsd-compat, if enabled, to override system ones.
+ * We no-op out the weak symbol definition rather than remove it to reduce
+ * future sync problems.
+ */
+#define DEF_WEAK(x)
 
 /*
  * Platforms that have arc4random_uniform() and not arc4random_stir()
@@ -840,5 +866,12 @@ struct winsize {
 #  define __predict_false(exp)    ((exp) != 0)
 # endif /* gcc version */
 #endif /* __predict_true */
+
+#if defined(HAVE_GLOB_H) && defined(GLOB_HAS_ALTDIRFUNC) && \
+    defined(GLOB_HAS_GL_MATCHC) && defined(GLOB_HAS_GL_STATV) && \
+    defined(HAVE_DECL_GLOB_NOMATCH) &&  HAVE_DECL_GLOB_NOMATCH != 0 && \
+    !defined(BROKEN_GLOB)
+# define USE_SYSTEM_GLOB
+#endif
 
 #endif /* _DEFINES_H */

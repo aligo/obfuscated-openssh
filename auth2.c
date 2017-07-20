@@ -1,4 +1,4 @@
-/* $OpenBSD: auth2.c,v 1.132 2014/07/15 15:54:14 millert Exp $ */
+/* $OpenBSD: auth2.c,v 1.137 2017/02/03 23:05:57 djm Exp $ */
 /*
  * Copyright (c) 2000 Markus Friedl.  All rights reserved.
  *
@@ -87,8 +87,8 @@ Authmethod *authmethods[] = {
 
 /* protocol */
 
-static void input_service_request(int, u_int32_t, void *);
-static void input_userauth_request(int, u_int32_t, void *);
+static int input_service_request(int, u_int32_t, void *);
+static int input_userauth_request(int, u_int32_t, void *);
 
 /* helper */
 static Authmethod *authmethod_lookup(Authctxt *, const char *);
@@ -151,9 +151,7 @@ userauth_banner(void)
 {
 	char *banner = NULL;
 
-	if (options.banner == NULL ||
-	    strcasecmp(options.banner, "none") == 0 ||
-	    (datafellows & SSH_BUG_BANNER) != 0)
+	if (options.banner == NULL || (datafellows & SSH_BUG_BANNER) != 0)
 		return;
 
 	if ((banner = PRIVSEP(auth2_read_banner())) == NULL)
@@ -176,7 +174,7 @@ do_authentication2(Authctxt *authctxt)
 }
 
 /*ARGSUSED*/
-static void
+static int
 input_service_request(int type, u_int32_t seq, void *ctxt)
 {
 	Authctxt *authctxt = ctxt;
@@ -207,12 +205,14 @@ input_service_request(int type, u_int32_t seq, void *ctxt)
 		packet_disconnect("bad service request %s", service);
 	}
 	free(service);
+	return 0;
 }
 
 /*ARGSUSED*/
-static void
+static int
 input_userauth_request(int type, u_int32_t seq, void *ctxt)
 {
+	struct ssh *ssh = active_state;	/* XXX */
 	Authctxt *authctxt = ctxt;
 	Authmethod *m = NULL;
 	char *user, *service, *method, *style = NULL;
@@ -236,9 +236,10 @@ input_userauth_request(int type, u_int32_t seq, void *ctxt)
 		authctxt->user = xstrdup(user);
 		if (authctxt->pw && strcmp(service, "ssh-connection")==0) {
 			authctxt->valid = 1;
-			debug2("input_userauth_request: setting up authctxt for %s", user);
+			debug2("%s: setting up authctxt for %s",
+			    __func__, user);
 		} else {
-			logit("input_userauth_request: invalid user %s", user);
+			/* Invalid user, fake password information */
 			authctxt->pw = fakepw();
 #ifdef SSH_AUDIT_EVENTS
 			PRIVSEP(audit_event(SSH_INVALID_USER));
@@ -248,6 +249,8 @@ input_userauth_request(int type, u_int32_t seq, void *ctxt)
 		if (options.use_pam)
 			PRIVSEP(start_pam(authctxt));
 #endif
+		ssh_packet_set_log_preamble(ssh, "%suser %s",
+		    authctxt->valid ? "authenticating " : "invalid ", user);
 		setproctitle("%s%s", authctxt->valid ? user : "unknown",
 		    use_privsep ? " [net]" : "");
 		authctxt->service = xstrdup(service);
@@ -286,12 +289,14 @@ input_userauth_request(int type, u_int32_t seq, void *ctxt)
 	free(service);
 	free(user);
 	free(method);
+	return 0;
 }
 
 void
 userauth_finish(Authctxt *authctxt, int authenticated, const char *method,
     const char *submethod)
 {
+	struct ssh *ssh = active_state;	/* XXX */
 	char *methods;
 	int partial = 0;
 
@@ -353,10 +358,11 @@ userauth_finish(Authctxt *authctxt, int authenticated, const char *method,
 		packet_write_wait();
 		/* now we can break out */
 		authctxt->success = 1;
+		ssh_packet_set_log_preamble(ssh, "user %s", authctxt->user);
 	} else {
 
 		/* Allow initial try of "none" auth without failure penalty */
-		if (!authctxt->server_caused_failure &&
+		if (!partial && !authctxt->server_caused_failure &&
 		    (authctxt->attempt > 1 || strcmp(method, "none") != 0))
 			authctxt->failures++;
 		if (authctxt->failures >= options.max_authtries) {
@@ -424,8 +430,8 @@ authmethods_get(Authctxt *authctxt)
 		buffer_append(&b, authmethods[i]->name,
 		    strlen(authmethods[i]->name));
 	}
-	buffer_append(&b, "\0", 1);
-	list = xstrdup(buffer_ptr(&b));
+	if ((list = sshbuf_dup_string(&b)) == NULL)
+		fatal("%s: sshbuf_dup_string failed", __func__);
 	buffer_free(&b);
 	return list;
 }
